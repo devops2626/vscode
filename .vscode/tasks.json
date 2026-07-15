@@ -37,7 +37,11 @@
 			],
 			"dependsOrder": "sequence",
 			"inAgents": true,
-			"problemMatcher": []
+			"problemMatcher": [],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			}
 		},
 		{
 			"label": "Install Dependencies",
@@ -105,7 +109,7 @@
 					"endsPattern": "Finished transpilation with"
 				}
 			},
-			"inAgents": true,
+			"inAgents": true
 		},
 		{
 			"type": "npm",
