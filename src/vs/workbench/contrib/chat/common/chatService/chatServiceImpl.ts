@@ -162,6 +162,8 @@ export class ChatService extends Disposable implements IChatService {
 	private readonly _sessionModels: ChatModelStore;
 	private readonly _pendingRequests = this._register(new DisposableResourceMap<CancellableRequest>());
 	private readonly _queuedRequestDeferreds = new Map<string, DeferredPromise<ChatSendResult>>();
+	/** Pending requests that are synthetic streamed-turn trackers (not real in-flight requests). */
+	private readonly _syntheticPendingRequests = new WeakSet<CancellableRequest>();
 
 	/**
 	 * In-flight untitled→real materializations, keyed by the original untitled
@@ -796,10 +798,19 @@ export class ChatService extends Disposable implements IChatService {
 		};
 
 		let lastRequest: ChatRequestModel | undefined;
+		let lastResponseCompletedAt: number | undefined;
+		const completeLastResponse = () => {
+			if (Number.isFinite(lastResponseCompletedAt)) {
+				lastRequest?.response?.complete(lastResponseCompletedAt);
+			} else {
+				lastRequest?.response?.completeWithoutTimestamp();
+			}
+			lastResponseCompletedAt = undefined;
+		};
 		for (const message of providedSession.history) {
 			if (message.type === 'request') {
 				if (lastRequest) {
-					lastRequest.response?.complete();
+					completeLastResponse();
 				}
 
 				const requestText = message.prompt;
@@ -831,7 +842,8 @@ export class ChatService extends Disposable implements IChatService {
 					message.isSystemInitiated,
 					message.systemInitiatedLabel,
 					undefined, // terminalExecutionId
-					message.isTerminalRequest
+					message.isTerminalRequest,
+					message.timestamp ?? null,
 				);
 			} else {
 				// response
@@ -845,6 +857,10 @@ export class ChatService extends Disposable implements IChatService {
 							...(message.errorDetails ? { errorDetails: message.errorDetails } : {}),
 						});
 					}
+					if (lastRequest.response && typeof message.elapsedMs === 'number') {
+						lastRequest.response.setElapsedMs(message.elapsedMs);
+					}
+					lastResponseCompletedAt = message.completedAt;
 				}
 			}
 		}
@@ -869,6 +885,7 @@ export class ChatService extends Disposable implements IChatService {
 
 			const trackNewCancellableRequest = () => {
 				const cancellableRequest = this.instantiationService.createInstance(CancellableRequest, new CancellationTokenSource(), undefined, undefined, undefined);
+				this._syntheticPendingRequests.add(cancellableRequest);
 				this._pendingRequests.set(model.sessionResource, cancellableRequest);
 				this.telemetryService.publicLog2<ChatPendingRequestChangeEvent, ChatPendingRequestChangeClassification>(ChatPendingRequestChangeEventName, { action: 'add', source: 'remoteSession', chatSessionId: chatSessionResourceToId(model.sessionResource) });
 				cancellationListener.value = createCancellationListener(cancellableRequest.cancellationTokenSource.token);
@@ -886,10 +903,10 @@ export class ChatService extends Disposable implements IChatService {
 
 			// Handle server-initiated requests (e.g. consumed queued messages).
 			if (providedSession.onDidStartServerRequest) {
-				disposables.add(providedSession.onDidStartServerRequest(({ prompt, variableData, isSystemInitiated, systemInitiatedLabel, isTerminalRequest }) => {
+				disposables.add(providedSession.onDidStartServerRequest(({ prompt, variableData, timestamp, isSystemInitiated, systemInitiatedLabel, isTerminalRequest }) => {
 					// Complete any in-flight request
 					if (lastRequest?.response && !lastRequest.response.isComplete) {
-						lastRequest.response.complete();
+						completeLastResponse();
 					}
 
 					// Create a new request in the model
@@ -911,7 +928,8 @@ export class ChatService extends Disposable implements IChatService {
 						isSystemInitiated,
 						systemInitiatedLabel,
 						undefined, // terminalExecutionId
-						isTerminalRequest
+						isTerminalRequest,
+						timestamp,
 					);
 
 					// Reset progress tracking for the new turn
@@ -922,10 +940,54 @@ export class ChatService extends Disposable implements IChatService {
 				}));
 			}
 
+			// Mid-turn steering for streamed sessions: dispatch a queued Steering message immediately
+			// (the provider POSTs it server-side) rather than waiting for the turn to complete, but only
+			// when the in-flight request is the synthetic streamed-turn tracker (or none), never a real
+			// request. Server-managed (agent-host) queues are drained by the server, so they're excluded.
+			if (!this._isServerManagedQueue(model.sessionResource)) {
+				let dispatchingImmediateSteer = false;
+				const canImmediatelyDispatch = () => {
+					if (!model.getPendingRequests().some(r => r.kind === ChatRequestQueueKind.Steering)) {
+						return false;
+					}
+					const pending = this._pendingRequests.get(model.sessionResource);
+					return !pending || this._syntheticPendingRequests.has(pending);
+				};
+				disposables.add(model.onDidChangePendingRequests(() => {
+					if (dispatchingImmediateSteer || !canImmediatelyDispatch()) {
+						return;
+					}
+					dispatchingImmediateSteer = true;
+					// Defer past the in-progress addPendingRequest mutation to avoid re-entrancy.
+					queueMicrotask(() => {
+						dispatchingImmediateSteer = false;
+						if (this._sessionModels.get(model.sessionResource) !== model || !canImmediatelyDispatch()) {
+							return;
+						}
+						// Release the synthetic tracker so the queue processor can run, then dispatch.
+						if (this._pendingRequests.has(model.sessionResource)) {
+							this._pendingRequests.deleteAndDispose(model.sessionResource);
+						}
+						this.processNextPendingRequest(model);
+						// Restore tracking when the dispatched request settles (stream still active).
+						this._pendingRequests.get(model.sessionResource)?.responseCompletePromise?.finally(() => {
+							if (this._sessionModels.get(model.sessionResource) === model && !(providedSession.isCompleteObs?.get() ?? false)) {
+								ensureCancellationTracking();
+							}
+						});
+					});
+				}));
+			}
+
 			// Single autorun that streams progress for whichever request is current.
 			disposables.add(autorun(reader => {
 				const progressArray = providedSession.progressObs?.read(reader) ?? [];
 				const isComplete = providedSession.isCompleteObs?.read(reader) ?? false;
+
+				// Backstop: keep the streamed turn tracked as in-progress across immediate-steer dispatches.
+				if (!isComplete) {
+					ensureCancellationTracking();
+				}
 
 				// Process only new progress items
 				if (lastRequest && progressArray.length > lastProgressLength) {
@@ -940,19 +1002,21 @@ export class ChatService extends Disposable implements IChatService {
 				if (isComplete && lastRequest) {
 					this._pendingRequests.deleteAndDispose(model.sessionResource);
 					cancellationListener.clear();
-					lastRequest.response?.complete();
+					completeLastResponse();
+					// Flush any message queued/steered during the streamed turn (no-op if none, or server-managed).
+					this.processPendingRequests(model.sessionResource);
 				}
 			}));
 		} else {
 			if (providedSession.isCompleteObs?.get()) {
-				lastRequest?.response?.complete();
+				completeLastResponse();
 			}
 
 			this.telemetryService.publicLog2<ChatPendingRequestChangeEvent, ChatPendingRequestChangeClassification>(ChatPendingRequestChangeEventName, { action: 'notCancelable', source: 'remoteSession', chatSessionId: chatSessionResourceToId(model.sessionResource) });
 			if (lastRequest && model.editingSession) {
 				// wait for timeline to load so that a 'changes' part is added when the response completes
 				await chatEditingSessionIsReady(model.editingSession);
-				lastRequest.response?.complete();
+				completeLastResponse();
 			}
 		}
 

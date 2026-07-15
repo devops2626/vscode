@@ -864,8 +864,8 @@ export class ClaudeAgent extends Disposable implements IAgent {
 			const { session, chat } = this._resolveChatTarget(chatUri);
 			return this._disposeChat(session, chat);
 		},
-		sendMessage: (chatUri, prompt, attachments, turnId, senderClientId) => {
-			return this._sendMessage(chatUri, prompt, attachments, turnId, senderClientId);
+		sendMessage: (chatUri, prompt, workingDirectory, attachments, turnId, senderClientId) => {
+			return this._sendMessage(chatUri, prompt, workingDirectory, attachments, turnId, senderClientId);
 		},
 		abort: chatUri => {
 			return this._abortSession(chatUri);
@@ -992,7 +992,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 	 *   inside `materialize` throws so we never expose a live pipeline
 	 *   for a session the caller has already torn down.
 	 */
-	private async _materializeProvisional(sessionId: string): Promise<ClaudeAgentSession> {
+	private async _materializeProvisional(sessionId: string, workingDirectory?: URI): Promise<ClaudeAgentSession> {
 		const session = this._findAnySession(sessionId);
 		if (!session) {
 			throw new Error(`Cannot materialize unknown provisional session: ${sessionId}`);
@@ -1002,7 +1002,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 		const canUseTool = this._makeCanUseTool(sessionId);
 
 		try {
-			await session.materialize({ transport, canUseTool, isResume: false, serverToolHost: this._serverToolHost });
+			await session.materialize({ transport, canUseTool, isResume: false, workingDirectory, serverToolHost: this._serverToolHost });
 		} catch (err) {
 			this._sessions.deleteAndDispose(sessionId);
 			throw err;
@@ -1822,7 +1822,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 		})();
 	}
 
-	private async _sendMessage(chat: URI, prompt: string, attachments?: readonly MessageAttachment[], turnId?: string, _senderClientId?: string): Promise<void> {
+	private async _sendMessage(chat: URI, prompt: string, workingDirectory: URI | undefined, attachments?: readonly MessageAttachment[], turnId?: string, _senderClientId?: string): Promise<void> {
 		// `IAgent.sendMessage` declares `turnId?` but every production caller in
 		// `AgentSideEffects` supplies one. Generate a fallback so the
 		// session-side `QueuedRequest.turnId: string` invariant holds even if a
@@ -1856,7 +1856,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 			if (existing?.isPipelineReady) {
 				session = existing;
 			} else if (existing) {
-				session = await this._materializeProvisional(context.sessionId);
+				session = await this._materializeProvisional(context.sessionId, workingDirectory);
 			} else {
 				session = await this._resumeSession(context.sessionId, context.session);
 			}
@@ -1950,6 +1950,44 @@ export class ClaudeAgent extends Disposable implements IAgent {
 		}
 		if (steeringMessage) {
 			target.injectSteering(steeringMessage);
+		}
+	}
+
+	/**
+	 * Forward a user/picker `permissionMode` change to the running SDK so it
+	 * applies to the next tool this turn, not only from the next `send()`
+	 * (issue #321691). Only fires for client-originated changes (the host routes
+	 * internal server writes elsewhere), so this can forward without re-entering
+	 * a `canUseTool` callback.
+	 *
+	 * `permissionMode` is a **session-scoped** config value today (AHP has no
+	 * per-chat config), so — matching Copilot's session-scoped approvals — we
+	 * apply it to EVERY materialized chat's `Query` in the session, not just the
+	 * one the change arrived on. A `replace` that deletes the key resolves to the
+	 * chat's `permissionModeFallback`, the same value the next `send()` would
+	 * apply, so live state mirrors the reducer. Provisional chats are skipped —
+	 * their first `send()` seeds the mode into `Options.permissionMode`. Fire-and-
+	 * forget: the SDK control round-trip isn't awaited here; the pipeline caches
+	 * the mode so a later rebind / send re-applies it.
+	 *
+	 * TODO: adopt per-chat config when the protocol allows for such — see
+	 * https://github.com/microsoft/agent-host-protocol/issues/335 — so a picker
+	 * change scopes to its own chat instead of the whole session.
+	 */
+	onSessionConfigChanged(session: URI, values: Record<string, unknown>): void {
+		const entry = this._sessions.get(this._getChatContext(session).sessionId);
+		if (!entry) {
+			return;
+		}
+		const narrowed = narrowClaudePermissionMode(values[ClaudeSessionConfigKey.PermissionMode]);
+		for (const chat of entry.allChatSessions()) {
+			if (!chat.isPipelineReady) {
+				continue;
+			}
+			const mode = narrowed ?? chat.permissionModeFallback;
+			chat.setPermissionMode(mode).catch(err => {
+				this._logService.warn(`[Claude:${chat.sessionId}] mid-turn setPermissionMode(${mode}) failed`, err);
+			});
 		}
 	}
 
