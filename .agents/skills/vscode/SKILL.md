@@ -1,4 +1,3 @@
-```markdown
 # vscode Development Patterns
 
 > Auto-generated skill from repository analysis
@@ -87,4 +86,3 @@ This skill covers the core development patterns and conventions used in the `vsc
 | /add-feature | Scaffold and implement a new feature    |
 | /fix-bug     | Guide through fixing a bug              |
 | /write-test  | Steps for writing or updating a test    |
-```

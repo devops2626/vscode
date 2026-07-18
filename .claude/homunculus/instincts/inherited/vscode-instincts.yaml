@@ -1,4 +1,4 @@
-# Instincts generated from https://github.com/devops2626/vscode
+# Instincts generated from https://github.com/microsoft/vscode
 # Generated: 2026-07-14T20:20:51.806Z
 # Version: 2.0
 # NOTE: This file supplements (does not replace) any existing curated instincts.
@@ -10,7 +10,7 @@ trigger: "when writing a commit message"
 confidence: 0.6
 domain: git
 source: repo-analysis
-source_repo: https://github.com/devops2626/vscode
+source_repo: https://github.com/microsoft/vscode
 ---
 
 # Vscode Commit Length
@@ -30,7 +30,7 @@ trigger: "when creating a new file"
 confidence: 0.8
 domain: code-style
 source: repo-analysis
-source_repo: https://github.com/devops2626/vscode
+source_repo: https://github.com/microsoft/vscode
 ---
 
 # Vscode Naming Files
@@ -50,7 +50,7 @@ trigger: "when importing modules"
 confidence: 0.75
 domain: code-style
 source: repo-analysis
-source_repo: https://github.com/devops2626/vscode
+source_repo: https://github.com/microsoft/vscode
 ---
 
 # Vscode Import Relative
@@ -70,7 +70,7 @@ trigger: "when exporting from a module"
 confidence: 0.7
 domain: code-style
 source: repo-analysis
-source_repo: https://github.com/devops2626/vscode
+source_repo: https://github.com/microsoft/vscode
 ---
 
 # Vscode Export Style
@@ -90,7 +90,7 @@ trigger: "when writing tests"
 confidence: 0.8
 domain: testing
 source: repo-analysis
-source_repo: https://github.com/devops2626/vscode
+source_repo: https://github.com/microsoft/vscode
 ---
 
 # Vscode Test Separate
@@ -110,7 +110,7 @@ trigger: "When creating a new TypeScript file"
 confidence: 0.8
 domain: code-style
 source: repo-analysis
-source_repo: devops2626/vscode
+source_repo: microsoft/vscode
 ---
 
 # Vscode Instinct Filename Camelcase
@@ -129,7 +129,7 @@ trigger: "When defining a new function"
 confidence: 0.9
 domain: code-style
 source: repo-analysis
-source_repo: devops2626/vscode
+source_repo: microsoft/vscode
 ---
 
 # Vscode Instinct Function Camelcase
@@ -148,7 +148,7 @@ trigger: "When defining a new class"
 confidence: 0.9
 domain: code-style
 source: repo-analysis
-source_repo: devops2626/vscode
+source_repo: microsoft/vscode
 ---
 
 # Vscode Instinct Class Pascalcase
@@ -167,7 +167,7 @@ trigger: "When declaring a constant"
 confidence: 0.8
 domain: code-style
 source: repo-analysis
-source_repo: devops2626/vscode
+source_repo: microsoft/vscode
 ---
 
 # Vscode Instinct Constant Screaming Snake Case
@@ -186,7 +186,7 @@ trigger: "When importing modules"
 confidence: 0.9
 domain: code-style
 source: repo-analysis
-source_repo: devops2626/vscode
+source_repo: microsoft/vscode
 ---
 
 # Vscode Instinct Import Relative
@@ -205,7 +205,7 @@ trigger: "When exporting modules or functions"
 confidence: 0.9
 domain: code-style
 source: repo-analysis
-source_repo: devops2626/vscode
+source_repo: microsoft/vscode
 ---
 
 # Vscode Instinct Export Named
@@ -224,7 +224,7 @@ trigger: "When writing a commit message"
 confidence: 0.7
 domain: git
 source: repo-analysis
-source_repo: devops2626/vscode
+source_repo: microsoft/vscode
 ---
 
 # Vscode Instinct Commit Freeform
@@ -244,7 +244,7 @@ trigger: "When adding new tests"
 confidence: 0.8
 domain: testing
 source: repo-analysis
-source_repo: devops2626/vscode
+source_repo: microsoft/vscode
 ---
 
 # Vscode Instinct Test Separate Location

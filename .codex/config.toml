@@ -11,7 +11,7 @@ args = ["-y", "@modelcontextprotocol/server-github"]
 
 [mcp_servers.context7]
 command = "npx"
-args = ["-y", "@upstash/context7-mcp@latest"]
+args = ["-y", "@upstash/context7-mcp@v1.0.0"]
 
 [mcp_servers.exa]
 url = "https://mcp.exa.ai/mcp"
