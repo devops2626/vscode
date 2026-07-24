@@ -22,7 +22,7 @@ import { hasKey } from '../../../../base/common/types.js';
 import { NullLogService } from '../../../log/common/log.js';
 import { FileService } from '../../../files/common/fileService.js';
 import { InMemoryFileSystemProvider } from '../../../files/common/inMemoryFilesystemProvider.js';
-import { AgentSession, GITHUB_COPILOT_PROTECTED_RESOURCE, IRestoredSubagentSession, SubagentChatSignal, type IAgent, type IAgentChatDataChange, type IAgentChats, type IAgentCreateChatForkSource, type IAgentCreateChatOptions, type IAgentCreateChatResult, type IAgentCreateSessionConfig, type IAgentCreateSessionResult, type IAgentLegacyChat, type IAgentSessionMetadata, type IAgentSpawnChatEvent } from '../../common/agentService.js';
+import { AgentSession, GITHUB_COPILOT_PROTECTED_RESOURCE, IConnectionTrackerService, IRestoredSubagentSession, SubagentChatSignal, type IAgent, type IAgentChatDataChange, type IAgentChats, type IAgentCreateChatForkSource, type IAgentCreateChatOptions, type IAgentCreateChatResult, type IAgentCreateSessionConfig, type IAgentCreateSessionResult, type IAgentLegacyChat, type IAgentSessionMetadata, type IAgentSpawnChatEvent } from '../../common/agentService.js';
 import { ISessionDatabase, ISessionDataService } from '../../common/sessionDataService.js';
 import { SessionConfigKey } from '../../common/sessionConfigKeys.js';
 import { SessionDatabase } from '../../node/sessionDatabase.js';
@@ -31,6 +31,7 @@ import { ChangesetStatus, CustomizationType, MessageAttachmentKind, MessageKind,
 import { type MessageResourceAttachment } from '../../common/state/protocol/state.js';
 import { IProductService } from '../../../product/common/productService.js';
 import { AgentService } from '../../node/agentService.js';
+import { AgentHostManagementService } from '../../node/agentHostManagementService.js';
 import { MockAgent, ScriptedMockAgent } from './mockAgent.js';
 import { mapSessionEventsToHistoryRecords } from './historyRecordFixtures.js';
 import { type ISessionEvent } from './copilotTestEvents.js';
@@ -184,6 +185,72 @@ suite('AgentService (node dispatcher)', () => {
 					{ name: 'Other', url: 'https://other.example.com' },
 				],
 			});
+		});
+
+		test('aggregates managed-settings diagnostics from capable providers', async () => {
+			const provider: IAgent = copilotAgent;
+			provider.getManagedSettingsDiagnostics = async () => ({
+				source: 'device',
+				serverManaged: false,
+				deviceManaged: true,
+				failClosed: false,
+				bypassPermissionsDisabled: false,
+				managedKeys: ['permissions'],
+				settings: { permissions: { allow: ['Shell(echo *)'] } },
+			});
+			const unsupportedProvider = new MockAgent('other');
+			disposables.add(toDisposable(() => unsupportedProvider.dispose()));
+			const failingProvider = new MockAgent('failing');
+			disposables.add(toDisposable(() => failingProvider.dispose()));
+			const failingProviderContract: IAgent = failingProvider;
+			failingProviderContract.getManagedSettingsDiagnostics = async () => { throw new Error('unavailable'); };
+			service.registerProvider(provider);
+			service.registerProvider(unsupportedProvider);
+			service.registerProvider(failingProvider);
+
+			const diagnostics = await service.getManagedSettingsDiagnostics();
+
+			assert.deepStrictEqual(diagnostics, [
+				{
+					provider: 'copilot',
+					snapshot: {
+						source: 'device',
+						serverManaged: false,
+						deviceManaged: true,
+						failClosed: false,
+						bypassPermissionsDisabled: false,
+						managedKeys: ['permissions'],
+						settings: { permissions: { allow: ['Shell(echo *)'] } },
+					},
+				},
+				{ provider: 'failing', error: 'unavailable' },
+			]);
+		});
+
+		test('forwards managed-settings diagnostics through the local management service', async () => {
+			const provider: IAgent = copilotAgent;
+			provider.getManagedSettingsDiagnostics = async () => ({
+				source: 'device',
+				serverManaged: false,
+				deviceManaged: true,
+				failClosed: false,
+				bypassPermissionsDisabled: false,
+				managedKeys: ['permissions'],
+			});
+			service.registerProvider(provider);
+			const managementService = new AgentHostManagementService(service, {} as IConnectionTrackerService);
+
+			assert.deepStrictEqual(await managementService.getManagedSettingsDiagnostics(), [{
+				provider: 'copilot',
+				snapshot: {
+					source: 'device',
+					serverManaged: false,
+					deviceManaged: true,
+					failClosed: false,
+					bypassPermissionsDisabled: false,
+					managedKeys: ['permissions'],
+				},
+			}]);
 		});
 
 		test('maps progress events to protocol actions via onDidAction', async () => {
@@ -4832,6 +4899,69 @@ suite('AgentService (node dispatcher)', () => {
 			const state = service.stateManager.getSessionState(session.toString());
 			assert.strictEqual(state?.workingDirectories?.[0], worktreeDir.toString());
 		});
+	});
+
+	test('provisional workspace session advertises Uncommitted Changes before materialization', async () => {
+		class ProvisionalMockAgent extends MockAgent {
+			override async createSession(config?: import('../../common/agentService.js').IAgentCreateSessionConfig): Promise<IAgentCreateSessionResult> {
+				const result = await super.createSession(config);
+				return { ...result, provisional: true };
+			}
+		}
+
+		const workingDirectory = URI.file('/workspace');
+		const gitCalls: string[] = [];
+		const gitService = createNoopGitService();
+		gitService.getSessionGitState = async resource => {
+			gitCalls.push(resource.toString());
+			return {
+				hasGitHubRemote: false,
+				branchName: 'main',
+				baseBranchName: 'main',
+				upstreamBranchName: undefined,
+				incomingChanges: 0,
+				outgoingChanges: 0,
+				uncommittedChanges: 1,
+			};
+		};
+		gitService.computeSessionFileDiffs = async () => [];
+		const localService = disposables.add(new AgentService(new NullLogService(), fileService, nullSessionDataService, { _serviceBrand: undefined } as IProductService, gitService));
+		const provisionalAgent = new ProvisionalMockAgent('provisional');
+		disposables.add(toDisposable(() => provisionalAgent.dispose()));
+		localService.registerProvider(provisionalAgent);
+
+		const workspaceSession = await localService.createSession({
+			provider: provisionalAgent.id,
+			workingDirectory,
+		});
+		const uncommittedUri = buildUncommittedChangesetUri(workspaceSession.toString());
+		localService.addSubscriber(URI.parse(uncommittedUri), 'client-1');
+		for (let i = 0; i < 100; i++) {
+			if (localService.stateManager.getChangesetState(uncommittedUri)?.operations?.some(operation => operation.id === 'commit')) {
+				break;
+			}
+			await timeout(2);
+		}
+
+		const workspaceState = localService.stateManager.getSessionState(workspaceSession.toString());
+		assert.deepStrictEqual({
+			lifecycle: workspaceState?.lifecycle,
+			changesets: workspaceState?.changesets?.map(changeset => changeset.changeKind),
+			gitCalls,
+			hasCommit: localService.stateManager.getChangesetState(uncommittedUri)?.operations?.some(operation => operation.id === 'commit'),
+		}, {
+			lifecycle: SessionLifecycle.Creating,
+			changesets: ['uncommitted'],
+			gitCalls: [workingDirectory.toString()],
+			hasCommit: true,
+		});
+		localService.unsubscribe(URI.parse(uncommittedUri), 'client-1');
+
+		const workspaceLessSession = await localService.createSession({ provider: provisionalAgent.id });
+		assert.deepStrictEqual(
+			localService.stateManager.getSessionState(workspaceLessSession.toString())?.changesets ?? [],
+			[],
+		);
 	});
 
 	// ---- Item-2 regression: initial changeset seeding happens at create time --
