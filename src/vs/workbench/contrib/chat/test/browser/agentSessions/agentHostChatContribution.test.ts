@@ -25,11 +25,12 @@ import { IConfigurationService } from '../../../../../../platform/configuration/
 import { IAgentCreateSessionConfig, IAgentHostService, IAgentSessionMetadata, AgentSession } from '../../../../../../platform/agentHost/common/agentService.js';
 import type { ChatInputRequestWithPlanReview } from '../../../../../../platform/agentHost/common/agentHostPlanReview.js';
 import { AgentFeedbackAttachmentDisplayKind, AgentFeedbackAttachmentMetadataKey } from '../../../../../../platform/agentHost/common/meta/agentFeedbackAttachments.js';
+import { getElementAttachmentCorrelationId } from '../../../../../../platform/agentHost/common/meta/agentElementAttachments.js';
 import { BrowserViewAttachmentDisplayKind, BrowserViewAttachmentMetadataKey } from '../../../../../../platform/agentHost/common/meta/browserViewAttachments.js';
 import { ActionType, isSessionAction, isChatAction, type ActionEnvelope, type IRootConfigChangedAction, type SessionAction, type ChatAction as AgentHostChatAction, type TerminalAction, type INotification, type IToolCallConfirmedAction, type ITurnStartedAction, type ClientAnnotationsAction } from '../../../../../../platform/agentHost/common/state/sessionActions.js';
 import { ProtocolError, type IStateSnapshot } from '../../../../../../platform/agentHost/common/state/sessionProtocol.js';
 import { ChatInteractivity, ConfirmationOptionKind, CustomizationType, McpAuthRequiredReason, McpServerStatus, type ClientPluginCustomization, type ProtectedResourceMetadata, type ToolDefinition } from '../../../../../../platform/agentHost/common/state/protocol/state.js';
-import { ChatInputAnswerState, ChatInputAnswerValueKind, ChatInputQuestionKind, ChatInputResponseKind, ChatOriginKind, SessionLifecycle, SessionStatus, TurnState, ToolCallStatus, ToolCallConfirmationReason, ToolCallContributorKind, ToolCallRiskAssessmentKind, ToolCallRiskAssessmentStatus, createSessionState, createChatState, createDefaultChatSummary, buildChatUri, buildDefaultChatUri, parseDefaultChatUri, isAhpChatChannel, createActiveTurn, isAhpRootChannel, PolicyState, ResponsePartKind, ROOT_STATE_URI, StateComponents, buildSubagentChatUri, ToolResultContentType, MessageAttachmentKind, MessageKind, PendingMessageKind, type SessionState, type SessionSummary, type ChatState, type ISessionWithDefaultChat, RootState, type ToolCallState, type AgentInfo } from '../../../../../../platform/agentHost/common/state/sessionState.js';
+import { ChatInputAnswerState, ChatInputAnswerValueKind, ChatInputQuestionKind, ChatInputResponseKind, ChatOriginKind, SessionLifecycle, SessionStatus, TurnState, ToolCallStatus, ToolCallConfirmationReason, ToolCallContributorKind, ToolCallRiskAssessmentKind, ToolCallRiskAssessmentStatus, createSessionState, createChatState, createDefaultChatSummary, buildChatUri, buildDefaultChatUri, parseDefaultChatUri, isAhpChatChannel, createActiveTurn, isAhpRootChannel, PolicyState, ResponsePartKind, ROOT_STATE_URI, StateComponents, buildSubagentChatUri, ToolResultContentType, MessageAttachmentKind, MessageKind, PendingMessageKind, type SessionState, type SessionSummary, type ChatState, type ISessionWithDefaultChat, RootState, type ToolCallState, type AgentInfo, type MessageAttachment } from '../../../../../../platform/agentHost/common/state/sessionState.js';
 import { CompletionItemKind as AhpCompletionItemKind, type CompletionsParams, type CompletionsResult } from '../../../../../../platform/agentHost/common/state/protocol/commands.js';
 import { sessionReducer, chatReducer } from '../../../../../../platform/agentHost/common/state/sessionReducers.js';
 import { IDefaultAccountService } from '../../../../../../platform/defaultAccount/common/defaultAccount.js';
@@ -231,7 +232,7 @@ class MockAgentHostService extends mock<IAgentHostService>() {
 		// Simulate the server's eager active-client claim: if the caller
 		// provided activeClient, seed the session state so subscribers see it.
 		if (config?.activeClient) {
-			const resolvedWorkingDir = (this.nextResolvedWorkingDirectory ?? config.workingDirectory)?.toString();
+			const resolvedWorkingDir = (this.nextResolvedWorkingDirectory ?? config.workingDirectories?.[0])?.toString();
 			const summary: SessionSummary = {
 				resource: session.toString(),
 				provider: 'copilot',
@@ -1288,6 +1289,7 @@ suite('AgentHostChatContribution', () => {
 
 		test('sends and restores element context using its display kind', async () => {
 			const elementValue = 'Attached Element Context from Integrated Browser\n\nElement: button#submit.primary\n\nOuter HTML:\n```html\n<button id="submit" class="primary" title="Save & Continue" data-action=\'save\'>Save & Continue</button>\n```';
+			const imageData = VSBuffer.fromString('element screenshot');
 			const { sessionHandler, agentHostService, chatAgentService } = createContribution(disposables);
 			const { turnPromise, session, turnId, fire } = await startTurn(sessionHandler, agentHostService, chatAgentService, disposables, {
 				message: 'inspect this',
@@ -1299,6 +1301,8 @@ suite('AgentHostChatContribution', () => {
 						fullName: 'button#submit.primary',
 						value: elementValue,
 						innerText: 'Save',
+						imageData: imageData.buffer,
+						imageMimeType: 'image/jpeg',
 					}],
 				},
 			});
@@ -1307,31 +1311,69 @@ suite('AgentHostChatContribution', () => {
 			const attachments = turnStarted.message.attachments;
 			const replayedVariables = messageAttachmentsToVariableData(attachments, 'test')?.variables;
 			const unhintedVariables = messageAttachmentsToVariableData(attachments?.map(attachment => ({ ...attachment, displayKind: undefined })), 'test')?.variables;
+			const correlationIds = attachments?.map(getElementAttachmentCorrelationId);
+			const rewrittenImageUri = URI.file('/session/attachments/element.jpeg');
+			const rewrittenAttachments: MessageAttachment[] = [
+				attachments![0],
+				{
+					type: MessageAttachmentKind.Resource,
+					label: attachments![1].label,
+					displayKind: 'image',
+					uri: rewrittenImageUri.toString(),
+					_meta: attachments![1]._meta,
+				},
+			];
+			const replayedRewrittenVariables = messageAttachmentsToVariableData(rewrittenAttachments, 'local')?.variables;
 			assert.deepStrictEqual({
-				attachments,
+				attachments: attachments?.map(({ _meta, ...attachment }) => attachment),
+				correlationIds,
+				hasCorrelationId: typeof correlationIds?.[0] === 'string',
 				replayedVariables: replayedVariables?.map(variable => ({
 					kind: variable.kind,
 					name: variable.name,
 					fullName: variable.fullName,
 					icon: variable.icon?.id,
 					value: variable.value,
+					imageData: variable.kind === 'element' && variable.imageData instanceof Uint8Array ? Array.from(variable.imageData) : undefined,
+					imageMimeType: variable.kind === 'element' ? variable.imageMimeType : undefined,
+				})),
+				replayedRewrittenVariables: replayedRewrittenVariables?.map(variable => ({
+					kind: variable.kind,
+					imageData: variable.kind === 'element' && URI.isUri(variable.imageData) ? variable.imageData.toString() : undefined,
 				})),
 				unhintedKinds: unhintedVariables?.map(variable => variable.kind),
 			}, {
-				attachments: [{
-					type: MessageAttachmentKind.Simple,
-					label: 'button#submit',
-					modelRepresentation: elementValue,
-					displayKind: 'element',
-				}],
+				attachments: [
+					{
+						type: MessageAttachmentKind.Simple,
+						label: 'button#submit',
+						modelRepresentation: elementValue,
+						displayKind: 'element',
+					},
+					{
+						type: MessageAttachmentKind.EmbeddedResource,
+						label: 'button#submit screenshot',
+						displayKind: 'image',
+						data: encodeBase64(imageData),
+						contentType: 'image/jpeg',
+					}
+				],
+				correlationIds: [correlationIds?.[0], correlationIds?.[0]],
+				hasCorrelationId: true,
 				replayedVariables: [{
 					kind: 'element',
 					name: 'button#submit',
 					fullName: 'button#submit.primary',
 					icon: Codicon.layout.id,
 					value: elementValue,
+					imageData: Array.from(imageData.buffer),
+					imageMimeType: 'image/jpeg',
 				}],
-				unhintedKinds: ['generic'],
+				replayedRewrittenVariables: [{
+					kind: 'element',
+					imageData: rewrittenImageUri.toString(),
+				}],
+				unhintedKinds: ['generic', 'image'],
 			});
 
 			fire({ type: 'chat/turnComplete', endedAt: '2025-01-01T00:00:00.000Z', session: session!, turnId: turnId! } as ChatAction);
@@ -2539,8 +2581,8 @@ suite('AgentHostChatContribution', () => {
 				onDidChangeWorkspaceFolders: Event.None,
 			});
 
-			agentHostService.addSession({ session: AgentSession.uri('copilot', 'in-ws'), startTime: 1000, modifiedTime: 2000, summary: 'In workspace', workingDirectory: URI.file('/workspace/root/sub') });
-			agentHostService.addSession({ session: AgentSession.uri('copilot', 'out-ws'), startTime: 1000, modifiedTime: 2000, summary: 'Outside workspace', workingDirectory: URI.file('/other/place') });
+			agentHostService.addSession({ session: AgentSession.uri('copilot', 'in-ws'), startTime: 1000, modifiedTime: 2000, summary: 'In workspace', workingDirectories: [URI.file('/workspace/root/sub')] });
+			agentHostService.addSession({ session: AgentSession.uri('copilot', 'out-ws'), startTime: 1000, modifiedTime: 2000, summary: 'Outside workspace', workingDirectories: [URI.file('/other/place')] });
 			agentHostService.addSession({ session: AgentSession.uri('copilot', 'no-wd'), startTime: 1000, modifiedTime: 2000, summary: 'No working directory' });
 
 			const listController = createSessionListController(disposables, instantiationService, agentHostService);
@@ -2553,7 +2595,7 @@ suite('AgentHostChatContribution', () => {
 		test('refresh does not filter when no workspace folders are open', async () => {
 			const { listController, agentHostService } = createContribution(disposables);
 
-			agentHostService.addSession({ session: AgentSession.uri('copilot', 'a'), startTime: 1000, modifiedTime: 2000, summary: 'A', workingDirectory: URI.file('/any/path') });
+			agentHostService.addSession({ session: AgentSession.uri('copilot', 'a'), startTime: 1000, modifiedTime: 2000, summary: 'A', workingDirectories: [URI.file('/any/path')] });
 			agentHostService.addSession({ session: AgentSession.uri('copilot', 'b'), startTime: 1000, modifiedTime: 2000, summary: 'B' });
 
 			await listController.refresh(CancellationToken.None);
@@ -2573,8 +2615,8 @@ suite('AgentHostChatContribution', () => {
 				onDidChangeWorkspaceFolders: onDidChangeWorkspaceFolders.event,
 			});
 
-			agentHostService.addSession({ session: AgentSession.uri('copilot', 'in-ws'), startTime: 1000, modifiedTime: 2000, summary: 'In workspace', workingDirectory: URI.file('/workspace/root/sub') });
-			agentHostService.addSession({ session: AgentSession.uri('copilot', 'out-ws'), startTime: 1000, modifiedTime: 2000, summary: 'Outside workspace', workingDirectory: URI.file('/other/place') });
+			agentHostService.addSession({ session: AgentSession.uri('copilot', 'in-ws'), startTime: 1000, modifiedTime: 2000, summary: 'In workspace', workingDirectories: [URI.file('/workspace/root/sub')] });
+			agentHostService.addSession({ session: AgentSession.uri('copilot', 'out-ws'), startTime: 1000, modifiedTime: 2000, summary: 'Outside workspace', workingDirectories: [URI.file('/other/place')] });
 
 			const listController = createSessionListController(disposables, instantiationService, agentHostService);
 
@@ -5435,7 +5477,7 @@ suite('AgentHostChatContribution', () => {
 			await turnPromise;
 		});
 
-		test('output-only terminal attaches to chat without reviving a terminal instance', async () => {
+		test('completed output-only terminal retires its live attachment before finalizing its retained snapshot', async () => {
 			let reviveCalls = 0;
 			let attachmentDisposed = false;
 			let attached: { terminalUri: string; terminalToolSessionId: string } | undefined;
@@ -5471,6 +5513,20 @@ suite('AgentHostChatContribution', () => {
 				terminalUri: 'agenthost-terminal://shell/output',
 				terminalToolSessionId: JSON.stringify({ terminal: 'agenthost-terminal://shell/output', session: 'copilot:/new-turntest' }),
 			});
+			let stateNotifications = 0;
+			let firstCompletedObservation: { attachmentDisposed: boolean; output: string | undefined } | undefined;
+			disposables.add(autorun(reader => {
+				const state = invocation.state.read(reader);
+				stateNotifications++;
+				if (state.type === IChatToolInvocation.StateKind.Completed && !firstCompletedObservation) {
+					const completedTerminalData = invocation.toolSpecificData?.kind === 'terminal' ? invocation.toolSpecificData : undefined;
+					firstCompletedObservation = {
+						attachmentDisposed,
+						output: completedTerminalData?.terminalCommandOutput?.text,
+					};
+				}
+			}));
+			const notificationsBeforeCompletion = stateNotifications;
 
 			fire({
 				type: 'chat/toolCallComplete',
@@ -5493,16 +5549,23 @@ suite('AgentHostChatContribution', () => {
 			assert.deepStrictEqual({
 				output: completedTerminalData?.terminalCommandOutput?.text,
 				attachmentDisposed,
+				firstCompletedObservation,
+				stateNotificationDelta: stateNotifications - notificationsBeforeCompletion,
 			}, {
 				output: 'final output\r\n',
-				attachmentDisposed: false,
+				attachmentDisposed: true,
+				firstCompletedObservation: {
+					attachmentDisposed: true,
+					output: 'final output\r\n',
+				},
+				stateNotificationDelta: 1,
 			});
 			fire({ type: 'chat/turnComplete', endedAt: '2025-01-01T00:00:00.000Z', session, turnId } as ChatAction);
 			await turnPromise;
 			assert.strictEqual(attachmentDisposed, true);
 		});
 
-		test('completed output-only terminal with static output never attaches to the live resource', async () => {
+		test('completed output-only terminal with a retained snapshot never attaches to the live resource', async () => {
 			let attachCalls = 0;
 			const { sessionHandler, agentHostService, chatAgentService } = createContribution(disposables, {
 				agentHostTerminalServiceOverride: {
@@ -7475,7 +7538,7 @@ suite('AgentHostChatContribution', () => {
 			await turnPromise;
 
 			assert.strictEqual(agentHostService.createSessionCalls.length, 1);
-			assert.strictEqual(agentHostService.createSessionCalls[0].workingDirectory?.toString(), URI.file('/custom/working/dir').toString());
+			assert.strictEqual(agentHostService.createSessionCalls[0].workingDirectories?.[0]?.toString(), URI.file('/custom/working/dir').toString());
 		}));
 
 		test('handler forwards request session config to createSession', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
@@ -7870,7 +7933,7 @@ suite('AgentHostChatContribution', () => {
 			await turnPromise;
 
 			assert.strictEqual(agentHostService.createSessionCalls.length, 1);
-			assert.strictEqual(agentHostService.createSessionCalls[0].workingDirectory?.toString(), resolvedWorkingDirectory.toString());
+			assert.strictEqual(agentHostService.createSessionCalls[0].workingDirectories?.[0]?.toString(), resolvedWorkingDirectory.toString());
 		}));
 
 		test('handler passes vscode-agent-host URI as-is to createSession', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
@@ -7903,7 +7966,7 @@ suite('AgentHostChatContribution', () => {
 			await turnPromise;
 
 			assert.strictEqual(agentHostService.createSessionCalls.length, 1);
-			assert.strictEqual(agentHostService.createSessionCalls[0].workingDirectory?.toString(), agentHostUri.toString());
+			assert.strictEqual(agentHostService.createSessionCalls[0].workingDirectories?.[0]?.toString(), agentHostUri.toString());
 		}));
 
 		test('list controller includes description in items', async () => {
@@ -7941,7 +8004,7 @@ suite('AgentHostChatContribution', () => {
 				startTime: 1000,
 				modifiedTime: 2000,
 				summary: 'With git',
-				workingDirectory,
+				workingDirectories: workingDirectory ? [workingDirectory] : undefined,
 			});
 			await controller.refresh(CancellationToken.None);
 
