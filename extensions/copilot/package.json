@@ -6985,9 +6985,9 @@
     "test:completions-core": "tsx src/extension/completions-core/vscode-node/extension/test/runTest.ts"
   },
   "devDependencies": {
-    "@azure/identity": "4.9.1",
+    "@azure/identity": "4.13.1",
     "@azure/keyvault-secrets": "^4.10.0",
-    "@azure/msal-node": "^3.6.3",
+    "@azure/msal-node": "^5.5.0",
     "@c4312/scip": "^0.1.0",
     "@fluentui/react-components": "^9.66.6",
     "@fluentui/react-icons": "^2.0.305",
@@ -7030,10 +7030,10 @@
     "csv-parse": "^6.0.0",
     "dotenv": "^17.2.0",
     "electron": "^42.5.0",
-    "esbuild": "0.28.1",
+    "esbuild": "0.28.2",
     "fastq": "^1.19.1",
     "glob": "^11.1.0",
-    "js-yaml": "^4.3.1",
+    "js-yaml": "^5.2.3",
     "minimist": "^1.2.8",
     "mobx": "^6.13.7",
     "mobx-react-lite": "^4.1.0",
@@ -7069,7 +7069,7 @@
     "zod": "3.25.76"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.82.0",
+    "@anthropic-ai/sdk": "^0.91.1",
     "@github/blackbird-external-ingest-utils": "^0.3.0",
     "@github/copilot": "^1.0.73",
     "@google/genai": "1.30.0",
@@ -7103,7 +7103,7 @@
     "ajv": "^8.18.0",
     "applicationinsights": "^3.15.1",
     "best-effort-json-parser": "^1.2.1",
-    "diff": "^8.0.3",
+    "diff": "^8.0.4",
     "express": "^5.2.1",
     "ignore": "^7.0.5",
     "isbinaryfile": "^5.0.4",
