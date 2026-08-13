@@ -174,8 +174,12 @@ function endpointUrl(endpoint: EndpointDef): string {
  */
 async function loadSchema(sourceOverride?: string): Promise<{ source: string; resolved: string; ok: boolean; schema?: unknown; error?: string }> {
 	const source = sourceOverride || SCHEMA_SOURCE;
+	const isUserProvidedSource = sourceOverride !== undefined;
 	try {
 		if (/^https?:\/\//i.test(source)) {
+			if (isUserProvidedSource) {
+				return { source, resolved: source, ok: false, error: 'Remote HTTP(S) schema sources are not allowed via the source query parameter.' };
+			}
 			const res = await fetch(source);
 			if (!res.ok) {
 				return { source, resolved: source, ok: false, error: `HTTP ${res.status} ${res.statusText}` };
