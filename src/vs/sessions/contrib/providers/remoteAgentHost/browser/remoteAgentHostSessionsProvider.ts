@@ -19,7 +19,7 @@ import { AGENT_HOST_SCHEME, agentHostAuthority, type AgentHostUriMapper, fromAge
 import { AgentSession, type IAgentSessionMetadata } from '../../../../../platform/agentHost/common/agent.js';
 import { type IAgentConnection } from '../../../../../platform/agentHost/common/agentService.js';
 import { ChangesetKind } from '../../../../../platform/agentHost/common/changesetUri.js';
-import { IRemoteAgentHostService, RemoteAgentHostConnectionStatus } from '../../../../../platform/agentHost/common/remoteAgentHostService.js';
+import { IRemoteAgentHostService, removeWebSocketRemoteAgentHostEntry, RemoteAgentHostConnectionStatus } from '../../../../../platform/agentHost/common/remoteAgentHostService.js';
 import type { ISessionGitState } from '../../../../../platform/agentHost/common/state/sessionState.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IDialogService, IFileDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
@@ -34,6 +34,7 @@ import { IChatWidgetService } from '../../../../../workbench/contrib/chat/browse
 import { IChatService } from '../../../../../workbench/contrib/chat/common/chatService/chatService.js';
 import { IChatSessionsService } from '../../../../../workbench/contrib/chat/common/chatSessionsService.js';
 import { ILanguageModelsService } from '../../../../../workbench/contrib/chat/common/languageModels.js';
+import { ResourceLabelHomeStore } from '../../../../../workbench/services/label/common/resourceLabelHomeStore.js';
 import { IAgentHostConnectProgress, IAgentHostGroup } from '../../../../common/agentHostSessionsProvider.js';
 import { buildAgentHostSessionWorkspace, readBranchProtectionPatterns } from '../../../../common/agentHostSessionWorkspace.js';
 import { IGitHubInfo, ISession, ISessionType, ISessionWorkspace, ISessionWorkspaceBrowseAction, SESSION_WORKSPACE_GROUP_REMOTE } from '../../../../services/sessions/common/session.js';
@@ -170,6 +171,7 @@ export class RemoteAgentHostSessionsProvider extends BaseAgentHostSessionsProvid
 	private _connection: IAgentConnection | undefined;
 	private _defaultDirectory: string | undefined;
 	private readonly _connectionListeners = this._register(new DisposableStore());
+	private readonly _resourceLabelHomes: ResourceLabelHomeStore;
 	private readonly _connectionAuthority: string;
 	private readonly _connectOnDemand: (() => Promise<void>) | undefined;
 	private readonly _disconnectOnDemand: (() => Promise<void>) | undefined;
@@ -210,6 +212,7 @@ export class RemoteAgentHostSessionsProvider extends BaseAgentHostSessionsProvid
 		@IWorkspaceTrustManagementService workspaceTrustManagementService: IWorkspaceTrustManagementService,
 	) {
 		super(chatSessionsService, chatService, chatWidgetService, languageModelsService, _configurationService, logService, gitHubService, instantiationService, sessionsService, activeClientService, storageService, dialogService, workspaceTrustManagementService);
+		this._resourceLabelHomes = this._register(instantiationService.createInstance(ResourceLabelHomeStore));
 
 		this._connectionAuthority = agentHostAuthority(config.address);
 		this._connectOnDemand = config.connectOnDemand;
@@ -220,6 +223,13 @@ export class RemoteAgentHostSessionsProvider extends BaseAgentHostSessionsProvid
 		this._defaultChangesetKind = config.defaultChangesetKind;
 		this.onDidReportConnectProgress = config.onDidReportConnectProgress;
 		this.canConnectOnDemand = !!config.connectOnDemand;
+		const updateResourceLabelHomes = () => {
+			const homes = this.getResourceLabelHomes();
+			this._resourceLabelHomes.set(homes);
+		};
+		this._register(this._onDidChangeSessionsImmediately(updateResourceLabelHomes));
+		this._register(this._onDidChangeDraftSessions.event(updateResourceLabelHomes));
+		updateResourceLabelHomes();
 		const displayName = config.name || config.address;
 
 		this.id = `agenthost-${this._connectionAuthority}`;
@@ -252,6 +262,7 @@ export class RemoteAgentHostSessionsProvider extends BaseAgentHostSessionsProvid
 		}];
 
 		this._enableSessionCachePersistence(this._storageKey, `${CACHED_SESSIONS_STORAGE_PREFIX_LEGACY}${this._connectionAuthority}`);
+		updateResourceLabelHomes();
 		this._register(this._configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration('git.branchProtection')) {
 				this._refreshSessionWorkspaces();
@@ -354,6 +365,7 @@ export class RemoteAgentHostSessionsProvider extends BaseAgentHostSessionsProvid
 			await this._disconnectOnDemand();
 			return;
 		}
+		await removeWebSocketRemoteAgentHostEntry(this._configurationService, this.remoteAddress);
 		await this._remoteAgentHostService.removeRemoteAgentHost(this.remoteAddress);
 	}
 
